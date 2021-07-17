@@ -123,7 +123,7 @@ class InvariantPointAttention(nn.Module):
         point_weights = F.softplus(self.point_weights)
         point_weights = repeat(point_weights, 'h -> (b h) () () ()', b = b)
 
-        attn_logits_points = -0.5 * (point_dist * point_weights).sum(dim = -1)
+        attn_logits_points = -0.5 * (point_dist * point_weights * self.point_attn_logits_scale).sum(dim = -1)
 
         # combine attn logits
 

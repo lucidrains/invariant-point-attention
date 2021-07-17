@@ -16,12 +16,6 @@ def default(val, d):
 def max_neg_value(t):
     return -torch.finfo(t.dtype).max
 
-def apply_transform(x, rot, trans):
-    return x
-
-def apply_inverse_transform(x, rot, trans):
-    return x
-
 # classes
 
 class InvariantPointAttention(nn.Module):
@@ -71,9 +65,9 @@ class InvariantPointAttention(nn.Module):
             Rearrange('b ... h -> (b h) ...')
         )
 
-        # combine out
+        # combine out - scalar dim + pairwise dim + point dim * (3 for coordinates in R3 and then 1 for norm)
 
-        self.to_out = nn.Linear((scalar_value_dim * heads) + (pairwise_repr_dim * heads) + (point_value_dim * heads * 3), dim)
+        self.to_out = nn.Linear(heads * (scalar_value_dim + pairwise_repr_dim + point_value_dim * (3 + 1)), dim)
 
     def forward(
         self,
@@ -96,6 +90,15 @@ class InvariantPointAttention(nn.Module):
 
         q_scalar, k_scalar, v_scalar = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h = h), (q_scalar, k_scalar, v_scalar))
         q_point, k_point, v_point = map(lambda t: rearrange(t, 'b n (h d c) -> (b h) n d c', h = h, c = 3), (q_point, k_point, v_point))
+
+        rotations = repeat(rotations, 'b n r1 r2 -> (b h) n r1 r2', h = h)
+        translations = repeat(translations, 'b n c -> (b h) n () c', h = h)
+
+        # rotate qkv points into global frame
+
+        q_point = einsum('b n d c, b n c r -> b n d r', q_point, rotations) + translations
+        k_point = einsum('b n d c, b n c r -> b n d r', k_point, rotations) + translations
+        v_point = einsum('b n d c, b n c r -> b n d r', v_point, rotations) + translations
 
         # derive attn logits for scalar and pairwise
 
@@ -138,11 +141,17 @@ class InvariantPointAttention(nn.Module):
 
         results_points = einsum('b i j, b j d c -> b i d c', attn, v_point)
 
+        # rotate aggregated point values back into local frame
+
+        results_points = einsum('b n d c, b n c r -> b n d r', results_points - translations, rotations.transpose(-1, -2))
+        results_points_norm = results_points.norm(dim = -1)
+
         # merge back heads
 
         results_scalar = rearrange(results_scalar, '(b h) n d -> b n (h d)', h = h)
         results_pairwise = rearrange(results_pairwise, 'b h n d -> b n (h d)', h = h)
         results_points = rearrange(results_points, '(b h) n d c -> b n (h d c)', h = h)
+        results_points_norm = rearrange(results_points_norm, '(b h) n d -> b n (h d)', h = h)
 
-        results = torch.cat((results_scalar, results_pairwise, results_points), dim = -1)
+        results = torch.cat((results_scalar, results_pairwise, results_points, results_points_norm), dim = -1)
         return self.to_out(results)

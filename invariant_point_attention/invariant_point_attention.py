@@ -192,7 +192,7 @@ def FeedForward(dim, mult = 1., num_layers = 2, act = nn.ReLU):
 
         layers.append(nn.Linear(dim_in, dim_out))
 
-        if not is_last:
+        if is_last:
             continue
 
         layers.append(act())
@@ -226,6 +226,6 @@ class IPABlock(nn.Module):
         x = self.attn_norm(x) if post_norm else x
 
         ff_input = x if post_norm else self.ff_norm(x)
-        x = self.ff(x) + x
+        x = self.ff(ff_input) + x
         x = self.ff_norm(x) if post_norm else x
         return x

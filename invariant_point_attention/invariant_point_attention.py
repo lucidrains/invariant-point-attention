@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from torch import nn, einsum
 
 from einops.layers.torch import Rearrange
-from einops import rearrange
+from einops import rearrange, repeat
 
 # helpers
 
@@ -49,7 +49,10 @@ class InvariantPointAttention(nn.Module):
         self.to_scalar_k = nn.Linear(dim, scalar_key_dim * heads, bias = False)
         self.to_scalar_v = nn.Linear(dim, scalar_value_dim * heads, bias = False)
 
-        # qkv projection for point attentoin (coordinate and orientation aware)
+        # qkv projection for point attention (coordinate and orientation aware)
+
+        point_weight_init_value = torch.log(torch.exp(torch.full((heads,), 1.)) - 1.)
+        self.point_weights = nn.Parameter(point_weight_init_value)
 
         self.point_attn_logits_scale = ((3 * point_key_dim) * (9 / 2)) ** -0.5
 
@@ -70,7 +73,7 @@ class InvariantPointAttention(nn.Module):
 
         # combine out
 
-        self.to_out = nn.Linear(point_value_dim + scalar_value_dim + pairwise_repr_dim + 1, dim)
+        self.to_out = nn.Linear((scalar_value_dim * heads) + (pairwise_repr_dim * heads) + (point_value_dim * heads * 3), dim)
 
     def forward(
         self,
@@ -81,7 +84,7 @@ class InvariantPointAttention(nn.Module):
         translations,
         mask = None
     ):
-        x, h, eps = single_repr, self.heads, self.eps
+        x, b, h, eps = single_repr, single_repr.shape[0], self.heads, self.eps
 
         # get queries, keys, values for scalar and point (coordinate-aware) attention pathways
 
@@ -94,12 +97,24 @@ class InvariantPointAttention(nn.Module):
         q_scalar, k_scalar, v_scalar = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h = h), (q_scalar, k_scalar, v_scalar))
         q_point, k_point, v_point = map(lambda t: rearrange(t, 'b n (h d c) -> (b h) n d c', h = h, c = 3), (q_point, k_point, v_point))
 
-        # derive attn logits
+        # derive attn logits for scalar and pairwise
 
         attn_logits_scalar = einsum('b i d, b j d -> b i j', q_scalar, k_scalar) * self.scalar_attn_logits_scale
         attn_logits_pairwise = self.to_pairwise_attn_bias(pairwise_repr) * self.pairwise_attn_logits_scale
 
-        attn_logits = attn_logits_scalar + attn_logits_pairwise
+        # derive attn logits for point attention
+
+        point_qk_diff = rearrange(q_point, 'b i d c -> b i () d c') - rearrange(k_point, 'b j d c -> b () j d c')
+        point_dist = (point_qk_diff ** 2).sum(dim = -2)
+
+        point_weights = F.softplus(self.point_weights)
+        point_weights = repeat(point_weights, 'h -> (b h) () () ()', b = b)
+
+        attn_logits_points = -0.5 * (point_dist * point_weights).sum(dim = -1)
+
+        # combine attn logits
+
+        attn_logits = attn_logits_scalar + attn_logits_pairwise + attn_logits_points
 
         # mask
 
@@ -119,10 +134,15 @@ class InvariantPointAttention(nn.Module):
         attn_with_heads = rearrange(attn, '(b h) i j -> b h i j', h = h)
         results_pairwise = einsum('b h i j, b i j d -> b h i d', attn_with_heads, pairwise_repr)
 
+        # aggregate point values
+
+        results_points = einsum('b i j, b j d c -> b i d c', attn, v_point)
+
         # merge back heads
 
         results_scalar = rearrange(results_scalar, '(b h) n d -> b n (h d)', h = h)
         results_pairwise = rearrange(results_pairwise, 'b h n d -> b n (h d)', h = h)
+        results_points = rearrange(results_points, '(b h) n d c -> b n (h d c)', h = h)
 
-        results = torch.cat((results_scalar, results_pairwise), dim = -1)
-        return single_repr
+        results = torch.cat((results_scalar, results_pairwise, results_points), dim = -1)
+        return self.to_out(results)

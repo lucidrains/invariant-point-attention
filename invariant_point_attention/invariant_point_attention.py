@@ -226,6 +226,6 @@ class IPABlock(nn.Module):
         x = self.attn_norm(x) if post_norm else x
 
         ff_input = x if post_norm else self.ff_norm(x)
-        x = self.ff(x) + x
+        x = self.ff(ff_input) + x
         x = self.ff_norm(x) if post_norm else x
         return x

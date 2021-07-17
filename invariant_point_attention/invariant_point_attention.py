@@ -144,7 +144,7 @@ class InvariantPointAttention(nn.Module):
         # rotate aggregated point values back into local frame
 
         results_points = einsum('b n d c, b n c r -> b n d r', results_points - translations, rotations.transpose(-1, -2))
-        results_points_norm = results_points.norm(dim = -1)
+        results_points_norm = torch.sqrt(sum(map(torch.square, results_points.unbind(dim = -1))) + eps)
 
         # merge back heads
 

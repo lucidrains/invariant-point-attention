@@ -1,0 +1,1 @@
+from invariant_point_attention.invariant_point_attention import InvariantPointAttention

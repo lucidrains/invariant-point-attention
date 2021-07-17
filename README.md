@@ -33,7 +33,7 @@ single_repr   = torch.randn(1, 256, 64)      # (batch x seq x dim)
 pairwise_repr = torch.randn(1, 256, 256, 64) # (batch x seq x seq x dim)
 mask          = torch.ones(1, 256).bool()    # (batch x seq)
 
-rotations     = repeat(torch.eye(3), 'r s -> b n r s', b = 1, n = 256)  # (batch x seq x rot1 x rot2) - example is identity
+rotations     = repeat(torch.eye(3), '... -> b n ...', b = 1, n = 256)  # (batch x seq x rot1 x rot2) - example is identity
 translations  = torch.zeros(1, 256, 3) # translation, also identity for example
 
 attn_out = attn(
@@ -63,7 +63,7 @@ attn = InvariantPointAttention(
 seq           = torch.randn(1, 256, 64)
 mask          = torch.ones(1, 256).bool()
 
-rotations     = repeat(torch.eye(3), 'r1 r2 -> b n r1 r2', b = 1, n = 256)
+rotations     = repeat(torch.eye(3), '... -> b n ...', b = 1, n = 256)
 translations  = torch.randn(1, 256, 3)
 
 attn_out = attn(

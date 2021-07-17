@@ -46,6 +46,36 @@ attn_out = attn(
 
 attn_out.shape # (1, 256, 64)
 ```
+
+You can also use this module without the pairwise representations, which is very specific to the Alphafold2 architecture.
+
+```python
+import torch
+from einops import repeat
+from invariant_point_attention import InvariantPointAttention
+
+attn = InvariantPointAttention(
+    dim = 64,
+    heads = 8,
+    require_pairwise_repr = False   # set this to False to use the module without pairwise representations
+)
+
+seq           = torch.randn(1, 256, 64)
+mask          = torch.ones(1, 256).bool()
+
+rotations     = repeat(torch.eye(3), 'r1 r2 -> b n r1 r2', b = 1, n = 256)
+translations  = torch.randn(1, 256, 3)
+
+attn_out = attn(
+    seq,
+    rotations = rotations,
+    translations = translations,
+    mask = mask
+)
+
+attn_out.shape # (1, 256, 64)
+```
+
 ## Citations
 
 ```bibtex

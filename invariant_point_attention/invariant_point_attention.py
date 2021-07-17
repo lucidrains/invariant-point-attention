@@ -29,15 +29,21 @@ class InvariantPointAttention(nn.Module):
         point_key_dim = 4,
         point_value_dim = 4,
         pairwise_repr_dim = None,
+        require_pairwise_repr = True,
         eps = 1e-8
     ):
         super().__init__()
         self.eps = eps
         self.heads = heads
+        self.require_pairwise_repr = require_pairwise_repr
+
+        # num attention contributions
+
+        num_attn_logits = 3 if require_pairwise_repr else 2
 
         # qkv projection for scalar attention (normal)
 
-        self.scalar_attn_logits_scale = (3 * scalar_key_dim) ** -0.5
+        self.scalar_attn_logits_scale = (num_attn_logits * scalar_key_dim) ** -0.5
 
         self.to_scalar_q = nn.Linear(dim, scalar_key_dim * heads, bias = False)
         self.to_scalar_k = nn.Linear(dim, scalar_key_dim * heads, bias = False)
@@ -48,7 +54,7 @@ class InvariantPointAttention(nn.Module):
         point_weight_init_value = torch.log(torch.exp(torch.full((heads,), 1.)) - 1.)
         self.point_weights = nn.Parameter(point_weight_init_value)
 
-        self.point_attn_logits_scale = ((3 * point_key_dim) * (9 / 2)) ** -0.5
+        self.point_attn_logits_scale = ((num_attn_logits * point_key_dim) * (9 / 2)) ** -0.5
 
         self.to_point_q = nn.Linear(dim, point_key_dim * heads * 3, bias = False)
         self.to_point_k = nn.Linear(dim, point_key_dim * heads * 3, bias = False)
@@ -56,14 +62,15 @@ class InvariantPointAttention(nn.Module):
 
         # pairwise representation projection to attention bias
 
-        self.pairwise_attn_logits_scale = 3 ** -0.5
+        pairwise_repr_dim = default(pairwise_repr_dim, dim) if require_pairwise_repr else 0
 
-        pairwise_repr_dim = default(pairwise_repr_dim, dim)
+        if require_pairwise_repr:
+            self.pairwise_attn_logits_scale = num_attn_logits ** -0.5
 
-        self.to_pairwise_attn_bias = nn.Sequential(
-            nn.Linear(pairwise_repr_dim, heads),
-            Rearrange('b ... h -> (b h) ...')
-        )
+            self.to_pairwise_attn_bias = nn.Sequential(
+                nn.Linear(pairwise_repr_dim, heads),
+                Rearrange('b ... h -> (b h) ...')
+            )
 
         # combine out - scalar dim + pairwise dim + point dim * (3 for coordinates in R3 and then 1 for norm)
 
@@ -72,13 +79,14 @@ class InvariantPointAttention(nn.Module):
     def forward(
         self,
         single_repr,
-        pairwise_repr,
+        pairwise_repr = None,
         *,
         rotations,
         translations,
         mask = None
     ):
-        x, b, h, eps = single_repr, single_repr.shape[0], self.heads, self.eps
+        x, b, h, eps, require_pairwise_repr = single_repr, single_repr.shape[0], self.heads, self.eps, self.require_pairwise_repr
+        assert not (require_pairwise_repr and not exists(pairwise_repr)), 'pairwise representation must be given as second argument'
 
         # get queries, keys, values for scalar and point (coordinate-aware) attention pathways
 
@@ -103,7 +111,9 @@ class InvariantPointAttention(nn.Module):
         # derive attn logits for scalar and pairwise
 
         attn_logits_scalar = einsum('b i d, b j d -> b i j', q_scalar, k_scalar) * self.scalar_attn_logits_scale
-        attn_logits_pairwise = self.to_pairwise_attn_bias(pairwise_repr) * self.pairwise_attn_logits_scale
+
+        if require_pairwise_repr:
+            attn_logits_pairwise = self.to_pairwise_attn_bias(pairwise_repr) * self.pairwise_attn_logits_scale
 
         # derive attn logits for point attention
 
@@ -117,7 +127,10 @@ class InvariantPointAttention(nn.Module):
 
         # combine attn logits
 
-        attn_logits = attn_logits_scalar + attn_logits_pairwise + attn_logits_points
+        attn_logits = attn_logits_scalar + attn_logits_points
+
+        if require_pairwise_repr:
+            attn_logits = attn_logits + attn_logits_pairwise
 
         # mask
 
@@ -135,7 +148,9 @@ class InvariantPointAttention(nn.Module):
         results_scalar = einsum('b i j, b j d -> b i d', attn, v_scalar)
 
         attn_with_heads = rearrange(attn, '(b h) i j -> b h i j', h = h)
-        results_pairwise = einsum('b h i j, b i j d -> b h i d', attn_with_heads, pairwise_repr)
+
+        if require_pairwise_repr:
+            results_pairwise = einsum('b h i j, b i j d -> b h i d', attn_with_heads, pairwise_repr)
 
         # aggregate point values
 
@@ -149,9 +164,16 @@ class InvariantPointAttention(nn.Module):
         # merge back heads
 
         results_scalar = rearrange(results_scalar, '(b h) n d -> b n (h d)', h = h)
-        results_pairwise = rearrange(results_pairwise, 'b h n d -> b n (h d)', h = h)
         results_points = rearrange(results_points, '(b h) n d c -> b n (h d c)', h = h)
         results_points_norm = rearrange(results_points_norm, '(b h) n d -> b n (h d)', h = h)
 
-        results = torch.cat((results_scalar, results_pairwise, results_points, results_points_norm), dim = -1)
+        results = (results_scalar, results_points, results_points_norm)
+
+        if require_pairwise_repr:
+            results_pairwise = rearrange(results_pairwise, 'b h n d -> b n (h d)', h = h)
+            results = (*results, results_pairwise)
+
+        # concat results and project out
+
+        results = torch.cat(results, dim = -1)
         return self.to_out(results)

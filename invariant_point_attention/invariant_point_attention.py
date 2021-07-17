@@ -177,3 +177,55 @@ class InvariantPointAttention(nn.Module):
 
         results = torch.cat(results, dim = -1)
         return self.to_out(results)
+
+# one transformer block based on IPA
+
+def FeedForward(dim, mult = 1., num_layers = 2, act = nn.ReLU):
+    layers = []
+    dim_hidden = dim * mult
+
+    for ind in range(num_layers):
+        is_first = ind == 0
+        is_last  = ind == (num_layers - 1)
+        dim_in   = dim if is_first else dim_hidden
+        dim_out  = dim if is_last else dim_hidden
+
+        layers.append(nn.Linear(dim_in, dim_out))
+
+        if not is_last:
+            continue
+
+        layers.append(act())
+
+    return nn.Sequential(*layers)
+
+class IPABlock(nn.Module):
+    def __init__(
+        self,
+        *,
+        dim,
+        ff_mult = 1,
+        ff_num_layers = 3,     # in the paper, they used 3 layer transition (feedforward) block
+        post_norm = True,      # in the paper, they used post-layernorm - offering pre-norm as well
+        **kwargs
+    ):
+        super().__init__()
+        self.post_norm = post_norm
+
+        self.attn_norm = nn.LayerNorm(dim)
+        self.attn = InvariantPointAttention(dim = dim, **kwargs)
+
+        self.ff_norm = nn.LayerNorm(dim)
+        self.ff = FeedForward(dim, mult = ff_mult, num_layers = ff_num_layers)
+
+    def forward(self, x, **kwargs):
+        post_norm = self.post_norm
+
+        attn_input = x if post_norm else self.attn_norm(x)
+        x = self.attn(attn_input, **kwargs) + x
+        x = self.attn_norm(x) if post_norm else x
+
+        ff_input = x if post_norm else self.ff_norm(x)
+        x = self.ff(x) + x
+        x = self.ff_norm(x) if post_norm else x
+        return x

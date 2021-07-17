@@ -76,6 +76,41 @@ attn_out = attn(
 attn_out.shape # (1, 256, 64)
 ```
 
+You can also use one IPA-based transformer block, which is an IPA followed by a feedforward. By default it will use post-layernorm as done in the official code, but you can also try pre-layernorm by setting `post_norm = False`
+
+```python
+import torch
+from torch import nn
+from einops import repeat
+from invariant_point_attention import IPABlock
+
+block = IPABlock(
+    dim = 64,
+    heads = 8,
+    post_norm = False,
+    require_pairwise_repr = False   # set this to False to use the module without pairwise representations
+)
+
+seq           = torch.randn(1, 256, 64)
+mask          = torch.ones(1, 256).bool()
+
+rotations     = repeat(torch.eye(3), 'r1 r2 -> b n r1 r2', b = 1, n = 256)
+translations  = torch.randn(1, 256, 3)
+
+attn_out = block(
+    seq,
+    rotations = rotations,
+    translations = translations,
+    mask = mask
+)
+
+updates = nn.Linear(64, 6)(attn_out)
+quaternion_update, translation_update = updates.chunk(2, dim = -1) # (1, 256, 3), (1, 256, 3)
+
+# apply updates to rotations and translations for the next iteration
+
+```
+
 ## Citations
 
 ```bibtex

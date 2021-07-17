@@ -1,3 +1,5 @@
+<img src="./ipa.png" width="400px"></img>
+
 ## Invariant Point Attention - Pytorch
 
 Implementation of Invariant Point Attention as a standalone module, which was used in the structure module of <a href="https://github.com/deepmind/alphafold">Alphafold2</a> for coordinate refinement.

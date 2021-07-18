@@ -4,7 +4,6 @@
 
 Implementation of Invariant Point Attention as a standalone module, which was used in the structure module of <a href="https://github.com/deepmind/alphafold">Alphafold2</a> for coordinate refinement.
 
-- [ ] write up a test for invariance under rotation
 - [ ] enforce float32 for certain operations
 
 ## Install

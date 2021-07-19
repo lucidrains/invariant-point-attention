@@ -48,18 +48,13 @@ for _ in range(10000):
         l = seqs.shape[1]
         coords = rearrange(coords, 'b (l s) c -> b l s c', s = 14)
 
-        # Keeping only the backbone coordinates
+        # Keeping only the Ca atom
 
-        coords = coords[:, :, 0:3, :]
-        coords = rearrange(coords, 'b l s c -> b (l s) c')
-
-        seq = repeat(seqs, 'b n -> b (n c)', c = 3)
-        masks = repeat(masks, 'b n -> b (n c)', c = 3)
-
+        coords = coords[:, :, 1, :]
         noised_coords = coords + torch.randn_like(coords)
 
         denoised_coords = net(
-            seq,
+            seqs,
             translations = noised_coords,
             mask = masks
         )

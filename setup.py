@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
   name = 'invariant-point-attention',
   packages = find_packages(),
-  version = '0.0.7',
+  version = '0.0.8',
   license='MIT',
   description = 'Invariant Point Attention',
   author = 'Phil Wang',

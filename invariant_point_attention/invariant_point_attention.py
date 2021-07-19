@@ -229,3 +229,88 @@ class IPABlock(nn.Module):
         x = self.ff(ff_input) + x
         x = self.ff_norm(x) if post_norm else x
         return x
+
+# add an IPA Transformer - iteratively updating rotations and translations
+
+# this portion is not accurate to AF2, as AF2 applies a FAPE auxiliary loss on each layer, as well as a stop gradient on the rotations
+# just an attempt to see if this could evolve to something more generally usable
+
+class IPATransformer(nn.Module):
+    def __init__(
+        self,
+        *,
+        dim,
+        depth,
+        num_tokens = None,
+        **kwargs
+    ):
+        super().__init__()
+
+        # using quaternion functions from pytorch3d
+
+        try:
+            from pytorch3d.transforms import quaternion_multiply, quaternion_to_matrix
+            self.quaternion_to_matrix = quaternion_to_matrix
+            self.quaternion_multiply = quaternion_multiply
+        except ImportError as err:
+            print('unable to pytorch3d - please install with `conda install pytorch3d -c pytorch3d`')
+            raise err
+
+        # modules
+
+        self.token_emb = nn.Embedding(num_tokens, dim) if exists(num_tokens) else None
+
+        self.layers = nn.ModuleList([])
+        for _ in range(depth):
+            self.layers.append(nn.ModuleList([
+                IPABlock(dim = dim, **kwargs),
+                nn.Linear(dim, 6)
+            ]))
+
+    def forward(
+        self,
+        single_repr,
+        *,
+        translations = None,
+        quaternions = None,
+        pairwise_repr = None,
+        mask = None
+    ):
+        x, device, quaternion_multiply, quaternion_to_matrix = single_repr, single_repr.device, self.quaternion_multiply, self.quaternion_to_matrix
+        b, n, *_ = x.shape
+
+        if exists(self.token_emb):
+            x = self.token_emb(x)
+
+        # if no initial quaternions passed in, start from identity
+
+        if not exists(quaternions):
+            quaternions = torch.tensor([1., 0., 0., 0.], device = device) # initial rotations
+            quaternions = repeat(quaternions, 'd -> b n d', b = b, n = n)
+
+        # if not translations passed in, start from identity
+
+        if not exists(translations):
+            translations = torch.zeros((b, n, 3), device = device)
+
+        # go through the layers and apply invariant point attention and feedforward
+
+        for block, to_update in self.layers:
+            rotations = quaternion_to_matrix(quaternions)
+
+            x = block(
+                x,
+                pairwise_repr = pairwise_repr,
+                rotations = rotations,
+                translations = translations
+            )
+
+            # update quaternion and translation
+
+            quaternion_update, translation_update = to_update(x).chunk(2, dim = -1)
+            quaternion_update = F.pad(quaternion_update, (1, 0), value = 1.)
+
+            quaternions = quaternions + quaternion_multiply(quaternions, quaternion_update)
+            translations = translations + einsum('b n c, b n c r -> b n r', translation_update, rotations)
+
+        return x, translations, quaternions

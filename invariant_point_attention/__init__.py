@@ -1,1 +1,1 @@
-from invariant_point_attention.invariant_point_attention import InvariantPointAttention, IPABlock
+from invariant_point_attention.invariant_point_attention import InvariantPointAttention, IPABlock, IPATransformer

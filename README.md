@@ -114,6 +114,26 @@ quaternion_update, translation_update = updates.chunk(2, dim = -1) # (1, 256, 3)
 
 ```
 
+## Toy Example
+
+To run IPA on a toy task for denoising protein backbone coordinates, first install `pytorch3d` by running
+
+```bash
+$ conda install pytorch3d -c pytorch3d
+```
+
+Then you need to install `sidechainnet` with
+
+```bash
+$ pip install sidechainnet
+```
+
+Finally
+
+```
+$ python denoise.py
+```
+
 ## Citations
 
 ```bibtex

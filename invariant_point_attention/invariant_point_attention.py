@@ -242,6 +242,7 @@ class IPATransformer(nn.Module):
         dim,
         depth,
         num_tokens = None,
+        predict_points = False,
         **kwargs
     ):
         super().__init__()
@@ -256,9 +257,11 @@ class IPATransformer(nn.Module):
             print('unable to import pytorch3d - please install with `conda install pytorch3d -c pytorch3d`')
             raise err
 
-        # modules
+        # embedding
 
         self.token_emb = nn.Embedding(num_tokens, dim) if exists(num_tokens) else None
+
+        # layers
 
         self.layers = nn.ModuleList([])
         for _ in range(depth):
@@ -266,6 +269,13 @@ class IPATransformer(nn.Module):
                 IPABlock(dim = dim, **kwargs),
                 nn.Linear(dim, 6)
             ]))
+
+        # output
+
+        self.predict_points = predict_points
+
+        if predict_points:
+            self.to_points = nn.Linear(dim, 3)
 
     def forward(
         self,
@@ -313,4 +323,10 @@ class IPATransformer(nn.Module):
             quaternions = quaternions + quaternion_multiply(quaternions, quaternion_update)
             translations = translations + einsum('b n c, b n c r -> b n r', translation_update, rotations)
 
-        return x, translations, quaternions
+        if not self.predict_points:
+            return x, translations, quaternions
+
+        points_local = self.to_points(x)
+        rotations = quaternion_to_matrix(quaternions)
+        points_global = einsum('b n c, b n c d -> b n d', points_local, rotations) + translations
+        return points_global

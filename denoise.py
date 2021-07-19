@@ -4,10 +4,7 @@ from torch import nn, einsum
 from torch.optim import Adam
 
 from einops import rearrange, repeat
-
 import sidechainnet as scn
-
-from pytorch3d.transforms import quaternion_to_matrix
 from invariant_point_attention import IPATransformer
 
 BATCH_SIZE = 1

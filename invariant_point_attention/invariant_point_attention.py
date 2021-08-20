@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+from torch.cuda.amp import autocast
 from contextlib import contextmanager
 from torch import nn, einsum
 
@@ -151,8 +152,8 @@ class InvariantPointAttention(nn.Module):
 
         attn = attn_logits.softmax(dim = - 1)
 
-        with disable_tf32():
-            # ENTER SENSITIVE PART: disable TF32 for precision
+        with disable_tf32(), autocast(enabled = False):
+            # disable TF32 for precision
 
             # aggregate values
 

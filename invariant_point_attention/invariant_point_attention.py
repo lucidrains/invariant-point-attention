@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+from contextlib import contextmanager
 from torch import nn, einsum
 
 from einops.layers.torch import Rearrange
@@ -16,8 +17,12 @@ def default(val, d):
 def max_neg_value(t):
     return -torch.finfo(t.dtype).max
 
-def switch_tf32(target):
-    torch.backends.cuda.matmul.allow_tf32 = target 
+@contextmanager
+def disable_tf32():
+    orig_value = torch.backends.cuda.matmul.allow_tf32
+    torch.backends.cuda.matmul.allow_tf32 = False
+    yield
+    torch.backends.cuda.matmul.allow_tf32 = orig_value
 
 # classes
 
@@ -146,31 +151,26 @@ class InvariantPointAttention(nn.Module):
 
         attn = attn_logits.softmax(dim = - 1)
 
-        # ENTER SENSITIVE PART: disable TF32 for precision
+        with disable_tf32():
+            # ENTER SENSITIVE PART: disable TF32 for precision
 
-        switch_tf32(False)
+            # aggregate values
 
-        # aggregate values
+            results_scalar = einsum('b i j, b j d -> b i d', attn, v_scalar)
 
-        results_scalar = einsum('b i j, b j d -> b i d', attn, v_scalar)
+            attn_with_heads = rearrange(attn, '(b h) i j -> b h i j', h = h)
 
-        attn_with_heads = rearrange(attn, '(b h) i j -> b h i j', h = h)
+            if require_pairwise_repr:
+                results_pairwise = einsum('b h i j, b i j d -> b h i d', attn_with_heads, pairwise_repr)
 
-        if require_pairwise_repr:
-            results_pairwise = einsum('b h i j, b i j d -> b h i d', attn_with_heads, pairwise_repr)
+            # aggregate point values
 
-        # aggregate point values
+            results_points = einsum('b i j, b j d c -> b i d c', attn, v_point)
 
-        results_points = einsum('b i j, b j d c -> b i d c', attn, v_point)
+            # rotate aggregated point values back into local frame
 
-        # rotate aggregated point values back into local frame
-
-        results_points = einsum('b n d c, b n c r -> b n d r', results_points - translations, rotations.transpose(-1, -2))
-        results_points_norm = torch.sqrt( torch.square(results_points).sum(dim=-1) + eps )
-
-        # EXIT SENSITIVE PART: enable TF32 for speed
-
-        switch_tf32(True)
+            results_points = einsum('b n d c, b n c r -> b n d r', results_points - translations, rotations.transpose(-1, -2))
+            results_points_norm = torch.sqrt( torch.square(results_points).sum(dim=-1) + eps )
 
         # merge back heads
 

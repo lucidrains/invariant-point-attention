@@ -16,9 +16,6 @@ def default(val, d):
 def max_neg_value(t):
     return -torch.finfo(t.dtype).max
 
-def to_type(x, target_type):
-    return x.to(target_type) if x.dtype != target_type else x
-
 def switch_tf32(target):
     torch.backends.cuda.matmul.allow_tf32 = target 
 

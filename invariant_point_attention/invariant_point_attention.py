@@ -16,6 +16,12 @@ def default(val, d):
 def max_neg_value(t):
     return -torch.finfo(t.dtype).max
 
+def to_type(x, target_type):
+    return x.to(target_type) if x.dtype != target_type else x
+
+def switch_tf32(target):
+    torch.backends.cuda.matmul.allow_tf32 = target 
+
 # classes
 
 class InvariantPointAttention(nn.Module):
@@ -143,6 +149,10 @@ class InvariantPointAttention(nn.Module):
 
         attn = attn_logits.softmax(dim = - 1)
 
+        # ENTER SENSITIVE PART: disable TF32 for precision
+
+        switch_tf32(False)
+
         # aggregate values
 
         results_scalar = einsum('b i j, b j d -> b i d', attn, v_scalar)
@@ -159,7 +169,11 @@ class InvariantPointAttention(nn.Module):
         # rotate aggregated point values back into local frame
 
         results_points = einsum('b n d c, b n c r -> b n d r', results_points - translations, rotations.transpose(-1, -2))
-        results_points_norm = torch.sqrt(sum(map(torch.square, results_points.unbind(dim = -1))) + eps)
+        results_points_norm = torch.sqrt( torch.square(results_points).sum(dim=-1) + eps )
+
+        # EXIT SENSITIVE PART: enable TF32 for speed
+
+        switch_tf32(True)
 
         # merge back heads
 

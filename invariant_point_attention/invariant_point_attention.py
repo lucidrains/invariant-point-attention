@@ -145,6 +145,7 @@ class InvariantPointAttention(nn.Module):
 
         if exists(mask):
             mask = rearrange(mask, 'b i -> b i ()') * rearrange(mask, 'b j -> b () j')
+            mask = repeat(mask, 'b i j -> (b h) i j', h = h)
             mask_value = max_neg_value(attn_logits)
             attn_logits = attn_logits.masked_fill(~mask, mask_value)
 

@@ -127,12 +127,12 @@ class InvariantPointAttention(nn.Module):
         # derive attn logits for point attention
 
         point_qk_diff = rearrange(q_point, 'b i d c -> b i () d c') - rearrange(k_point, 'b j d c -> b () j d c')
-        point_dist = (point_qk_diff ** 2).sum(dim = -2)
+        point_dist = (point_qk_diff ** 2).sum(dim = (-1, -2))
 
         point_weights = F.softplus(self.point_weights)
-        point_weights = repeat(point_weights, 'h -> (b h) () () ()', b = b)
+        point_weights = repeat(point_weights, 'h -> (b h) () ()', b = b)
 
-        attn_logits_points = -0.5 * (point_dist * point_weights * self.point_attn_logits_scale).sum(dim = -1)
+        attn_logits_points = -0.5 * (point_dist * point_weights * self.point_attn_logits_scale)
 
         # combine attn logits
 

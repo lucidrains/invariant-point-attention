@@ -218,18 +218,20 @@ class IPABlock(nn.Module):
         *,
         dim,
         ff_mult = 1,
-        ff_num_layers = 3,     # in the paper, they used 3 layer transition (feedforward) block
-        post_norm = True,      # in the paper, they used post-layernorm - offering pre-norm as well
+        ff_num_layers = 3,          # in the paper, they used 3 layer transition (feedforward) block
+        post_norm = True,           # in the paper, they used post-layernorm - offering pre-norm as well
+        post_attn_dropout = 0.,
+        post_ff_dropout = 0.,
         **kwargs
     ):
         super().__init__()
         self.post_norm = post_norm
 
         self.attn_norm = nn.LayerNorm(dim)
-        self.attn = InvariantPointAttention(dim = dim, **kwargs)
+        self.attn = nn.Sequential(InvariantPointAttention(dim = dim, **kwargs), nn.Dropout(post_attn_dropout))
 
         self.ff_norm = nn.LayerNorm(dim)
-        self.ff = FeedForward(dim, mult = ff_mult, num_layers = ff_num_layers)
+        self.ff = nn.Sequential(FeedForward(dim, mult = ff_mult, num_layers = ff_num_layers), nn.Dropout(post_ff_dropout))
 
     def forward(self, x, **kwargs):
         post_norm = self.post_norm
@@ -256,6 +258,7 @@ class IPATransformer(nn.Module):
         depth,
         num_tokens = None,
         predict_points = False,
+        detach_rotations = True,
         **kwargs
     ):
         super().__init__()
@@ -266,7 +269,7 @@ class IPATransformer(nn.Module):
             from pytorch3d.transforms import quaternion_multiply, quaternion_to_matrix
             self.quaternion_to_matrix = quaternion_to_matrix
             self.quaternion_multiply = quaternion_multiply
-        except ImportError as err:
+        except (ImportError, ModuleNotFoundError) as err:
             print('unable to import pytorch3d - please install with `conda install pytorch3d -c pytorch3d`')
             raise err
 
@@ -282,6 +285,10 @@ class IPATransformer(nn.Module):
                 IPABlock(dim = dim, **kwargs),
                 nn.Linear(dim, 6)
             ]))
+
+        # whether to detach rotations or not, for stability during training
+
+        self.detach_rotations = detach_rotations
 
         # output
 
@@ -320,6 +327,9 @@ class IPATransformer(nn.Module):
 
         for block, to_update in self.layers:
             rotations = quaternion_to_matrix(quaternions)
+
+            if self.detach_rotations:
+                rotations.detach_()
 
             x = block(
                 x,

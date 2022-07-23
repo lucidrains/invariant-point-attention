@@ -3,9 +3,10 @@ from setuptools import setup, find_packages
 setup(
   name = 'invariant-point-attention',
   packages = find_packages(),
-  version = '0.1.4',
+  version = '0.2.1',
   license='MIT',
   description = 'Invariant Point Attention',
+  long_description_content_type = 'text/markdown',
   author = 'Phil Wang',
   author_email = 'lucidrains@gmail.com',
   url = 'https://github.com/lucidrains/invariant-point-attention',

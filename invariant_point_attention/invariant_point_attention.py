@@ -319,7 +319,7 @@ class IPATransformer(nn.Module):
 
             quaternion_update, translation_update = to_update(x).chunk(2, dim = -1)
             quaternion_update = F.pad(quaternion_update, (1, 0), value = 1.)
-
+            quaternion_update = quaternion_update / torch.linalg.norm(quaternion_update, dim=-1, keepdim=True).detach()
             quaternions = quaternion_multiply(quaternions, quaternion_update)
             translations = translations + einsum('b n c, b n c r -> b n r', translation_update, rotations)
 

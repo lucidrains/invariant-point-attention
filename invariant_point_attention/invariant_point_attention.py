@@ -1,5 +1,7 @@
 import torch
 import torch.nn.functional as F
+from torch.cuda.amp import autocast
+from contextlib import contextmanager
 from torch import nn, einsum
 
 from einops.layers.torch import Rearrange
@@ -15,6 +17,13 @@ def default(val, d):
 
 def max_neg_value(t):
     return -torch.finfo(t.dtype).max
+
+@contextmanager
+def disable_tf32():
+    orig_value = torch.backends.cuda.matmul.allow_tf32
+    torch.backends.cuda.matmul.allow_tf32 = False
+    yield
+    torch.backends.cuda.matmul.allow_tf32 = orig_value
 
 # classes
 
@@ -118,12 +127,12 @@ class InvariantPointAttention(nn.Module):
         # derive attn logits for point attention
 
         point_qk_diff = rearrange(q_point, 'b i d c -> b i () d c') - rearrange(k_point, 'b j d c -> b () j d c')
-        point_dist = (point_qk_diff ** 2).sum(dim = -2)
+        point_dist = (point_qk_diff ** 2).sum(dim = (-1, -2))
 
         point_weights = F.softplus(self.point_weights)
-        point_weights = repeat(point_weights, 'h -> (b h) () () ()', b = b)
+        point_weights = repeat(point_weights, 'h -> (b h) () ()', b = b)
 
-        attn_logits_points = -0.5 * (point_dist * point_weights * self.point_attn_logits_scale).sum(dim = -1)
+        attn_logits_points = -0.5 * (point_dist * point_weights * self.point_attn_logits_scale)
 
         # combine attn logits
 
@@ -136,6 +145,7 @@ class InvariantPointAttention(nn.Module):
 
         if exists(mask):
             mask = rearrange(mask, 'b i -> b i ()') * rearrange(mask, 'b j -> b () j')
+            mask = repeat(mask, 'b i j -> (b h) i j', h = h)
             mask_value = max_neg_value(attn_logits)
             attn_logits = attn_logits.masked_fill(~mask, mask_value)
 
@@ -143,23 +153,26 @@ class InvariantPointAttention(nn.Module):
 
         attn = attn_logits.softmax(dim = - 1)
 
-        # aggregate values
+        with disable_tf32(), autocast(enabled = False):
+            # disable TF32 for precision
 
-        results_scalar = einsum('b i j, b j d -> b i d', attn, v_scalar)
+            # aggregate values
 
-        attn_with_heads = rearrange(attn, '(b h) i j -> b h i j', h = h)
+            results_scalar = einsum('b i j, b j d -> b i d', attn, v_scalar)
 
-        if require_pairwise_repr:
-            results_pairwise = einsum('b h i j, b i j d -> b h i d', attn_with_heads, pairwise_repr)
+            attn_with_heads = rearrange(attn, '(b h) i j -> b h i j', h = h)
 
-        # aggregate point values
+            if require_pairwise_repr:
+                results_pairwise = einsum('b h i j, b i j d -> b h i d', attn_with_heads, pairwise_repr)
 
-        results_points = einsum('b i j, b j d c -> b i d c', attn, v_point)
+            # aggregate point values
 
-        # rotate aggregated point values back into local frame
+            results_points = einsum('b i j, b j d c -> b i d c', attn, v_point)
 
-        results_points = einsum('b n d c, b n c r -> b n d r', results_points - translations, rotations.transpose(-1, -2))
-        results_points_norm = torch.sqrt(sum(map(torch.square, results_points.unbind(dim = -1))) + eps)
+            # rotate aggregated point values back into local frame
+
+            results_points = einsum('b n d c, b n c r -> b n d r', results_points - translations, rotations.transpose(-1, -2))
+            results_points_norm = torch.sqrt( torch.square(results_points).sum(dim=-1) + eps )
 
         # merge back heads
 
@@ -205,8 +218,10 @@ class IPABlock(nn.Module):
         *,
         dim,
         ff_mult = 1,
-        ff_num_layers = 3,     # in the paper, they used 3 layer transition (feedforward) block
-        post_norm = True,      # in the paper, they used post-layernorm - offering pre-norm as well
+        ff_num_layers = 3,          # in the paper, they used 3 layer transition (feedforward) block
+        post_norm = True,           # in the paper, they used post-layernorm - offering pre-norm as well
+        post_attn_dropout = 0.,
+        post_ff_dropout = 0.,
         **kwargs
     ):
         super().__init__()
@@ -214,19 +229,23 @@ class IPABlock(nn.Module):
 
         self.attn_norm = nn.LayerNorm(dim)
         self.attn = InvariantPointAttention(dim = dim, **kwargs)
+        self.post_attn_dropout = nn.Dropout(post_attn_dropout)
 
         self.ff_norm = nn.LayerNorm(dim)
         self.ff = FeedForward(dim, mult = ff_mult, num_layers = ff_num_layers)
+        self.post_ff_dropout = nn.Dropout(post_ff_dropout)
 
     def forward(self, x, **kwargs):
         post_norm = self.post_norm
 
         attn_input = x if post_norm else self.attn_norm(x)
         x = self.attn(attn_input, **kwargs) + x
+        x = self.post_attn_dropout(x)
         x = self.attn_norm(x) if post_norm else x
 
         ff_input = x if post_norm else self.ff_norm(x)
         x = self.ff(ff_input) + x
+        x = self.post_ff_dropout(x)
         x = self.ff_norm(x) if post_norm else x
         return x
 
@@ -243,6 +262,7 @@ class IPATransformer(nn.Module):
         depth,
         num_tokens = None,
         predict_points = False,
+        detach_rotations = True,
         **kwargs
     ):
         super().__init__()
@@ -253,7 +273,7 @@ class IPATransformer(nn.Module):
             from pytorch3d.transforms import quaternion_multiply, quaternion_to_matrix
             self.quaternion_to_matrix = quaternion_to_matrix
             self.quaternion_multiply = quaternion_multiply
-        except ImportError as err:
+        except (ImportError, ModuleNotFoundError) as err:
             print('unable to import pytorch3d - please install with `conda install pytorch3d -c pytorch3d`')
             raise err
 
@@ -269,6 +289,10 @@ class IPATransformer(nn.Module):
                 IPABlock(dim = dim, **kwargs),
                 nn.Linear(dim, 6)
             ]))
+
+        # whether to detach rotations or not, for stability during training
+
+        self.detach_rotations = detach_rotations
 
         # output
 
@@ -307,6 +331,9 @@ class IPATransformer(nn.Module):
 
         for block, to_update in self.layers:
             rotations = quaternion_to_matrix(quaternions)
+
+            if self.detach_rotations:
+                rotations.detach_()
 
             x = block(
                 x,

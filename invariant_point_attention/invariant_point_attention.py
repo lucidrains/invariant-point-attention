@@ -333,7 +333,7 @@ class IPATransformer(nn.Module):
             rotations = quaternion_to_matrix(quaternions)
 
             if self.detach_rotations:
-                rotations.detach_()
+                rotations = rotations.detach()
 
             x = block(
                 x,
